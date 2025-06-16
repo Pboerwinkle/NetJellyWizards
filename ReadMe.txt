@@ -12,3 +12,20 @@ how to run:
 controls:
  - WASD to move
  - x button to close
+
+conf files:
+    server:
+`
+listen port
+max client connections at one time
+`
+
+    client:
+`
+server address
+port
+default color (r g b)
+default spell 1
+default spell 2
+default spell 3
+`

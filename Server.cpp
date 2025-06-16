@@ -1,20 +1,23 @@
 #include <SFML/Graphics.hpp>
 #include <SFML/Network.hpp>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <cmath>
 #include <thread>
 #include <cstdint>
+#include <vector>
 
-const int maxConn = 10;
-sf::TcpSocket Sockets[maxConn];
-bool openSockets[maxConn];
-int port = 50001;
+int maxConn;
+int port;
 bool quit = false;
-std::int16_t* worldInfo;
 float deltaTime;
 const float maxFPS = 100.f;
 sf::Time maxFramerate = sf::seconds(1/maxFPS);
+
+std::int8_t gameMode = 0;
+std::int16_t mapCode = 0;
+std::int8_t gameState = 0;
 
 //class for players controlled by clients that connect to the server
 class Player {
@@ -26,12 +29,53 @@ class Player {
         sf::Packet sendPacket;
         std::int16_t pos[2] = {0, 0};
         sf::CircleShape icon;
+        std::uint8_t color[3];
+        std::string spells[3] = {"spel1", "spell2", "spelll3"};
+        std::int16_t healthMax;
+        std::int16_t healthActual;
+        std::int16_t effectAmnts[13];
+        bool ready;
+        std::int8_t team = 0;
+        std::int16_t stats[3] = {0, 0, 0};
 
         //listen for packets from the client
-        void packetListener() {
+        void packetListener(std::vector<sf::TcpSocket>& Sockets) {
+            std::int8_t signalCode;
+            std::int8_t spellLength;
+            std::int8_t nextChar;
+            std::string spell;
             while (!quit && Sockets[connNum].receive(recvPacket) != sf::Socket::Disconnected) {
                 Sockets[connNum].receive(recvPacket);
-                recvPacket>>pos[0]>>pos[1];
+                for (int i = 0; i < 8; i++) {
+                    recvPacket>>signalCode;
+                    if (signalCode == 0) {
+                        recvPacket>>color[0]>>color[1]>>color[2];
+                    } else if (signalCode == 1) {
+                        for (int j = 0; j < 3; j++) {
+                            recvPacket>>spellLength;
+                            spell = "";
+                            for (int k = 0; k < spellLength; k++) {
+                                recvPacket>>nextChar;
+                                spell += char(nextChar);
+                            }
+                            spells[j] = spell;
+                        }
+                    } else if (signalCode == 2) {
+                        recvPacket>>ready;
+                    } else if (signalCode == 3) {
+                        recvPacket>>healthMax>>healthActual;
+                    } else if (signalCode == 4) {
+                        for (int j = 0; j < 13; j++) {
+                            recvPacket>>effectAmnts[j];
+                        }
+                    } else if (signalCode == 5) {
+                        recvPacket>>pos[0]>>pos[1];
+                    } else if (signalCode == 6) {
+                        recvPacket>>team;
+                    } else if (signalCode == 7) {
+                        recvPacket>>stats[0]>>stats[1]>>stats[3];
+                    }
+                }
                 recvPacket.clear();
             }
             std::cout<<Sockets[connNum].getRemoteAddress()<<" disconnected"<<std::endl;
@@ -45,25 +89,54 @@ class Player {
         }
 
         //send info to the client
-        void sendInfo(Player* Players[maxConn]) {
+        void sendInfo(std::vector<Player*>& Players, std::vector<int>& activePlayers, std::vector<sf::TcpSocket>& Sockets) {
             std::int16_t playerNum = 0;
-            delete[] worldInfo;
-            worldInfo = new std::int16_t[maxConn*2];
+            std::int8_t spellLength;
+            std::int8_t signalCode;
 
-            //compile info
+            //get active players
             for (int i = 0; i < maxConn; i++) {
                 if (Players[i] && i != connNum) {
-                    worldInfo[playerNum*2] = Players[i]->pos[0];
-                    worldInfo[playerNum*2+1] = Players[i]->pos[1];
+                    activePlayers[playerNum] = i;
                     playerNum += 1;
                 }
             }
 
             //send info
-            sendPacket<<playerNum;
-            for (int i = 0; i < playerNum*2; i++) {
-                sendPacket<<worldInfo[i];
+            signalCode = 0;
+            sendPacket<<signalCode<<gameMode<<mapCode<<playerNum<<gameState;
+            for (int i = 0; i < playerNum; i++) {
+                signalCode = 1;
+                sendPacket<<signalCode;
+                signalCode = 0;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->color[0]<<Players[activePlayers[i]]->color[1]<<Players[activePlayers[i]]->color[2];
+                signalCode = 1;
+                sendPacket<<signalCode;
+                for (int j = 0; j < 3; j++) {
+                    spellLength = Players[activePlayers[i]]->spells[j].length();
+                    sendPacket<<spellLength;
+                    for (int k = 0; k < spellLength; k++) {
+                        sendPacket<<(std::int8_t)Players[activePlayers[i]]->spells[j][k];
+                    }
+                }
+                signalCode = 2;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->ready;
+                signalCode = 3;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->healthMax<<Players[activePlayers[i]]->healthActual;
+                signalCode = 4;
+                sendPacket<<signalCode;
+                for (int j = 0; j < 13; j++) {
+                    sendPacket<<Players[activePlayers[i]]->effectAmnts[j];
+                }
+                signalCode = 5;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->pos[0]<<Players[activePlayers[i]]->pos[1];
+                signalCode = 6;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->team;
+                signalCode = 7;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->stats[0]<<Players[activePlayers[i]]->stats[1]<<Players[activePlayers[i]]->stats[2];
             }
+            signalCode = -1;
+            sendPacket<<signalCode;
             Sockets[connNum].send(sendPacket);
             sendPacket.clear();
         }
@@ -74,17 +147,19 @@ class Player {
         }
 
         //runs on player creation
-        Player (int thisConnNum) {
+        Player (int thisConnNum, std::vector<sf::TcpSocket>& Sockets) {
             connNum = thisConnNum;
-            packetListenerThread = std::thread(&Player::packetListener, this);
+            packetListenerThread = std::thread(&Player::packetListener, this, std::ref(Sockets));
+            std::fill(std::begin(effectAmnts), std::end(effectAmnts), 0);
             icon = sf::CircleShape(30.f);
-            icon.setFillColor(sf::Color(255, 0, 0));
+            color[0] = 0; color[1] = 255; color[2] = 0;
+            icon.setFillColor(sf::Color(color[0], color[1], color[2]));
+            ready = true;
         }
 };
-Player* Players[2];
 
 //listen for new connections
-void connListener() {
+void connListener(std::vector<sf::TcpSocket>& Sockets, std::vector<bool>& openSockets, std::vector<Player*>& Players) {
     int connNum;
     sf::TcpListener listener;
     listener.listen(port);
@@ -106,7 +181,7 @@ void connListener() {
 
         //accept connection and assign a player object to the connection number
         if (listener.accept(Sockets[connNum]) == sf::Socket::Status::Done) {
-            Players[connNum] = new Player(connNum);
+            Players[connNum] = new Player(connNum, Sockets);
             openSockets[connNum] = false;
             std::cout<<Sockets[connNum].getRemoteAddress()<<" connected"<<std::endl;
         }
@@ -115,10 +190,19 @@ void connListener() {
 
 int main()
 {
+    std::ifstream configuration("server.conf");
+    configuration>>port>>maxConn;
+    configuration.close();
+
+    std::vector<sf::TcpSocket> Sockets(maxConn);
+    std::vector<bool> openSockets(maxConn);
+    std::vector<int> activePlayers(maxConn);
+    std::vector<Player*> Players(maxConn);
+
     std::fill(std::begin(openSockets), std::end(openSockets), true);
     sf::Clock frameClock;
     sf::Clock packetClock;
-    std::thread connListenerThread(connListener);
+    std::thread connListenerThread(connListener, std::ref(Sockets), std::ref(openSockets), std::ref(Players));
     sf::RenderWindow window(sf::VideoMode({600, 400}), "Server");
     sf::Event event;
     while (window.isOpen()) {
@@ -157,7 +241,7 @@ int main()
                         Players[i] = nullptr;
                         continue;
                     }
-                    Players[i]->sendInfo(Players);
+                    Players[i]->sendInfo(Players, activePlayers, Sockets);
                 }
             }
             packetClock.restart();
