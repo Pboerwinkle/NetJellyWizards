@@ -16,8 +16,10 @@ const float maxFPS = 100.f;
 sf::Time maxFramerate = sf::seconds(1/maxFPS);
 
 std::int8_t gameMode = 0;
-std::int16_t mapCode = 0;
-std::int8_t gameState = 0;
+std::string mapName = "pillars";
+std::int8_t gameState = 0; //0:lobby 1:game 2:endScreen
+
+bool allReady;
 
 //class for players controlled by clients that connect to the server
 class Player {
@@ -30,6 +32,7 @@ class Player {
         std::int16_t pos[2] = {0, 0};
         sf::CircleShape icon;
         std::uint8_t color[3];
+        std::string name = "unnamed";
         std::string spells[3] = {"spel1", "spell2", "spelll3"};
         std::int16_t healthMax;
         std::int16_t healthActual;
@@ -41,24 +44,18 @@ class Player {
         //listen for packets from the client
         void packetListener(std::vector<sf::TcpSocket>& Sockets) {
             std::int8_t signalCode;
-            std::int8_t spellLength;
-            std::int8_t nextChar;
-            std::string spell;
+            std::int8_t stringLength;
+            std::uint8_t nextChar;
+            std::string recvString;
             while (!quit && Sockets[connNum].receive(recvPacket) != sf::Socket::Disconnected) {
                 Sockets[connNum].receive(recvPacket);
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < 9; i++) {
                     recvPacket>>signalCode;
                     if (signalCode == 0) {
                         recvPacket>>color[0]>>color[1]>>color[2];
                     } else if (signalCode == 1) {
                         for (int j = 0; j < 3; j++) {
-                            recvPacket>>spellLength;
-                            spell = "";
-                            for (int k = 0; k < spellLength; k++) {
-                                recvPacket>>nextChar;
-                                spell += char(nextChar);
-                            }
-                            spells[j] = spell;
+                            recvPacket>>spells[j];
                         }
                     } else if (signalCode == 2) {
                         recvPacket>>ready;
@@ -74,6 +71,8 @@ class Player {
                         recvPacket>>team;
                     } else if (signalCode == 7) {
                         recvPacket>>stats[0]>>stats[1]>>stats[3];
+                    } else if (signalCode == 8) {
+                        recvPacket>>name;
                     }
                 }
                 recvPacket.clear();
@@ -91,7 +90,7 @@ class Player {
         //send info to the client
         void sendInfo(std::vector<Player*>& Players, std::vector<int>& activePlayers, std::vector<sf::TcpSocket>& Sockets) {
             std::int16_t playerNum = 0;
-            std::int8_t spellLength;
+            std::int8_t stringLength;
             std::int8_t signalCode;
 
             //get active players
@@ -104,7 +103,7 @@ class Player {
 
             //send info
             signalCode = 0;
-            sendPacket<<signalCode<<gameMode<<mapCode<<playerNum<<gameState;
+            sendPacket<<signalCode<<gameMode<<mapName<<playerNum<<gameState;
             for (int i = 0; i < playerNum; i++) {
                 signalCode = 1;
                 sendPacket<<signalCode;
@@ -113,11 +112,7 @@ class Player {
                 signalCode = 1;
                 sendPacket<<signalCode;
                 for (int j = 0; j < 3; j++) {
-                    spellLength = Players[activePlayers[i]]->spells[j].length();
-                    sendPacket<<spellLength;
-                    for (int k = 0; k < spellLength; k++) {
-                        sendPacket<<(std::int8_t)Players[activePlayers[i]]->spells[j][k];
-                    }
+                    sendPacket<<Players[activePlayers[i]]->spells[j];
                 }
                 signalCode = 2;
                 sendPacket<<signalCode<<Players[activePlayers[i]]->ready;
@@ -134,6 +129,8 @@ class Player {
                 sendPacket<<signalCode<<Players[activePlayers[i]]->team;
                 signalCode = 7;
                 sendPacket<<signalCode<<Players[activePlayers[i]]->stats[0]<<Players[activePlayers[i]]->stats[1]<<Players[activePlayers[i]]->stats[2];
+                signalCode = 8;
+                sendPacket<<signalCode<<Players[activePlayers[i]]->name;
             }
             signalCode = -1;
             sendPacket<<signalCode;
@@ -154,7 +151,7 @@ class Player {
             icon = sf::CircleShape(30.f);
             color[0] = 0; color[1] = 255; color[2] = 0;
             icon.setFillColor(sf::Color(color[0], color[1], color[2]));
-            ready = true;
+            ready = false;
         }
 };
 
@@ -227,6 +224,23 @@ int main()
 
                 connListenerThread.join();
                 std::cout<<"quitting"<<std::endl;
+            }
+        }
+
+        if (gameState == 0) {
+            for (int i = 0; i < maxConn; i++) {
+                if (Players[i]) {
+                    if (!Players[i]->ready) {
+                        allReady = false;
+                        std::cout<<"not ready"<<std::endl;
+                        break;
+                    } else {
+                        allReady = true;
+                    }
+                }
+            }
+            if (allReady) {
+                gameState = 1;
             }
         }
 

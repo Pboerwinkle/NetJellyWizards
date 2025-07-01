@@ -2,7 +2,4 @@
 *.kate-swp
 Client
 Server
-signalEncoding.txt
-spellCrafting.txt
-clientInterface.txt
-TODO.txt
+devHelper/

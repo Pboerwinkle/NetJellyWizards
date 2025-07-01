@@ -24,6 +24,8 @@ max client connections at one time
 `
 server address
 port
+default window size (width height scale(%))
+name(no spaces)
 default color (r g b)
 default spell 1
 default spell 2

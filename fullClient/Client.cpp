@@ -5,6 +5,9 @@
 #include <fstream>
 #include <cmath>
 #include <cstdint>
+#include "../shared/playerStruct.hpp"
+#include "ClientInterface.cpp"
+#include "ClientReadConf.cpp"
 
 sf::IpAddress serverIp;
 int port;
@@ -18,21 +21,9 @@ sf::Time maxFramerate = sf::seconds(1/maxFPS);
 sf::Mutex globalMutex;
 
 std::int8_t gameMode;
-std::int16_t mapCode;
+std::string mapName;
 std::int16_t playerNum = 0;
 std::int8_t gameState;
-
-struct Player {
-    std::uint8_t color[3]; //r, g, b
-    std::string spells[3]; //primary, secondary, tertiary
-    bool ready;
-    std::int16_t healthMax;
-    std::int16_t healthActual;
-    std::int16_t effectAmnts[13];
-    std::int16_t position[2]; //x, y
-    std::int8_t team;
-    std::int16_t stats[3]; //kills, deaths, goal
-};
 
 Player thisPlayer;
 Player* otherPlayers;
@@ -41,17 +32,13 @@ int currentPlayerIndex;
 //send info to the server
 void sendInfo() {
     std::int8_t signalCode;
-    std::int8_t spellLength;
+    std::int8_t stringLength;
     signalCode = 0;
     sendPacket<<signalCode<<thisPlayer.color[0]<<thisPlayer.color[1]<<thisPlayer.color[2];
     signalCode = 1;
     sendPacket<<signalCode;
     for (int j = 0; j < 3; j++) {
-        spellLength = thisPlayer.spells[j].length();
-        sendPacket<<spellLength;
-        for (int k = 0; k < spellLength; k++) {
-            sendPacket<<(std::int8_t)thisPlayer.spells[j][k];
-        }
+        sendPacket<<thisPlayer.spells[j];
     }
     signalCode = 2;
     sendPacket<<signalCode<<thisPlayer.ready;
@@ -68,6 +55,9 @@ void sendInfo() {
     sendPacket<<signalCode<<thisPlayer.team;
     signalCode = 7;
     sendPacket<<signalCode<<thisPlayer.stats[0]<<thisPlayer.stats[1]<<thisPlayer.stats[2];
+    signalCode = 8;
+    sendPacket<<signalCode<<thisPlayer.name;
+
     socket.send(sendPacket);
     sendPacket.clear();
 }
@@ -75,9 +65,9 @@ void sendInfo() {
 //listen for packets from the server
 void serverListener() {
     std::int8_t signalCode;
-    std::int8_t spellLength;
-    std::int8_t nextChar;
-    std::string spell;
+    std::int8_t stringLength;
+    std::uint8_t nextChar;
+    std::string recvString;
     while (!quit) {
         socket.receive(recvPacket);
         signalCode = 0;
@@ -89,23 +79,17 @@ void serverListener() {
         while (signalCode != -1) {
             recvPacket>>signalCode;
             if (signalCode == 0) {
-                recvPacket>>gameMode>>mapCode>>playerNum>>gameState;
+                recvPacket>>gameMode>>mapName>>playerNum>>gameState;
                 otherPlayers = new Player[playerNum];
             }
             else if (signalCode == 1) {
-                for (int i = 0; i < 8; i++) {
+                for (int i = 0; i < 9; i++) {
                     recvPacket>>signalCode;
                     if (signalCode == 0) {
                         recvPacket>>otherPlayers[currentPlayerIndex].color[0]>>otherPlayers[currentPlayerIndex].color[1]>>otherPlayers[currentPlayerIndex].color[2];
                     } else if (signalCode == 1) {
                         for (int j = 0; j < 3; j++) {
-                            recvPacket>>spellLength;
-                            spell = "";
-                            for (int k = 0; k < spellLength; k++) {
-                                recvPacket>>nextChar;
-                                spell += char(nextChar);
-                            }
-                            otherPlayers[currentPlayerIndex].spells[j] = spell;
+                            recvPacket>>otherPlayers[currentPlayerIndex].spells[j];
                         }
                     } else if (signalCode == 2) {
                         recvPacket>>otherPlayers[currentPlayerIndex].ready;
@@ -121,46 +105,42 @@ void serverListener() {
                         recvPacket>>otherPlayers[currentPlayerIndex].team;
                     } else if (signalCode == 7) {
                         recvPacket>>otherPlayers[currentPlayerIndex].stats[0]>>otherPlayers[currentPlayerIndex].stats[1]>>otherPlayers[currentPlayerIndex].stats[3];
+                    } else if (signalCode == 8) {
+                        recvPacket>>otherPlayers[currentPlayerIndex].name;
                     }
                 }
                 currentPlayerIndex += 1;
             }
         }
         globalMutex.unlock();
-        //recvPacket>>playerNum;
-        //worldSize = playerNum*2;
-        //delete[] worldInfo;
-        //worldInfo = new std::int16_t[worldSize];
-        //for (int i = 0; i < worldSize; i++) {
-        //    recvPacket>>worldInfo[i];
-        //}
         
         recvPacket.clear();
     }
     socket.disconnect();
 }
 
-const int moveInputBinds[4] = {sf::Keyboard::W, sf::Keyboard::S, sf::Keyboard::A, sf::Keyboard::D};
-const int moveVectors[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+// gamemode: 0
+sf::Texture buttonsTexture;
+sf::Sprite readyButton;
+float defaultButtonScale[2] = {1/600.f, 1/400.f};
+sf::Font lobbyFont;
+sf::Text lobbyText[4];
+int UIWidth1;
+int UIWidth2;
+int playerSelected = 0;
+std::string gameModeLookup[1] = {"Capture the Flag"};
+
+// gamemode: 1
+int moveInputBinds[4] = {sf::Keyboard::W, sf::Keyboard::S, sf::Keyboard::A, sf::Keyboard::D};
+int moveVectors[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
 
 bool moveInputs[4] = {false, false, false, false};
-int rawVel[2] = {0, 0};
-float rawDist = 0.f;
 
 float playerPos[2] = {0.f, 0.f};
 
 int moveSpeed = 100;
 
 int main() {
-    std::ifstream configuration("client.conf");
-    configuration>>serverIp>>port;
-    int nextNum;
-    configuration>>nextNum; thisPlayer.color[0] = nextNum;
-    configuration>>nextNum; thisPlayer.color[1] = nextNum;
-    configuration>>nextNum; thisPlayer.color[2] = nextNum;
-    configuration>>thisPlayer.spells[0]>>thisPlayer.spells[1]>>thisPlayer.spells[2];
-    configuration.close();
-
     thisPlayer.ready = false;
     thisPlayer.healthMax = 100;
     thisPlayer.healthActual = 100;
@@ -169,19 +149,35 @@ int main() {
     thisPlayer.team = 0;
     thisPlayer.stats[0] = 0; thisPlayer.stats[1] = 0; thisPlayer.stats[2] = 0;
 
+    std::uint16_t windowSize[2] = {0, 0};
+    std::uint16_t windowScale;
+    readConf(serverIp, port, windowSize, windowScale, thisPlayer);
+
     socket.connect(serverIp, port);
     std::thread serverListenerThread(&serverListener);
 
-    sf::RenderWindow window(sf::VideoMode({600, 400}), "Client");
+    sf::RenderWindow window(sf::VideoMode(windowSize[0], windowSize[1]), "Client", sf::Style::Close);
+    window.setSize({static_cast<std::uint16_t>(windowSize[0]*windowScale/100), static_cast<std::uint16_t>(windowSize[1]*windowScale/100)});
     window.setKeyRepeatEnabled(false);
-    sf::CircleShape playerIcon(30.f);
-    playerIcon.setFillColor(sf::Color(thisPlayer.color[0], thisPlayer.color[1], thisPlayer.color[2]));
     sf::CircleShape otherPlayerIcon(30.f);
     otherPlayerIcon.setFillColor(sf::Color(0, 255, 0));
 
+    buttonsTexture.loadFromFile("graphicalAssets/buttons.png");
+    readyButton.setTexture(buttonsTexture);
+    readyButton.setTextureRect(sf::IntRect(0, 0, 50, 50));
+    readyButton.setScale(defaultButtonScale[0]*windowSize[0], defaultButtonScale[0]*windowSize[0]);
+
+    lobbyFont.loadFromFile("graphicalAssets/arial.ttf");
+    for (int i = 0; i < 4; i++) {
+        lobbyText[i].setFont(lobbyFont);
+        lobbyText[i].setCharacterSize(windowSize[0]/50);
+        lobbyText[i].setStyle(sf::Text::Regular);
+    }
+    UIWidth1 = windowSize[0]/3;
+    UIWidth2 = windowSize[1]/3;
+
     sf::Clock frameClock;
     sf::Clock packetClock;
-    sf::Event event;
 
     while (window.isOpen()) {
         if (frameClock.getElapsedTime() < maxFramerate) {
@@ -189,47 +185,19 @@ int main() {
         }
         deltaTime = frameClock.restart().asMicroseconds()/1000000.f;
 
-        //get input
-        while (window.pollEvent(event)) {
-            if (event.type == sf::Event::Closed) {
-                quit = true;
-                serverListenerThread.join();
-                window.close();
-            }
-            //check key presses
-            if (event.type == sf::Event::KeyPressed) {
-                for (int i = 0; i < 4; i++) {
-                    if (event.key.code == moveInputBinds[i]) {
-                        moveInputs[i] = true;
-                    }
-                }
-            }
-            //check key releases
-            if (event.type == sf::Event::KeyReleased) {
-                for (int i = 0; i < 4; i++) {
-                    if (event.key.code == moveInputBinds[i]) {
-                        moveInputs[i] = false;
-                    }
-                }
-            }
+        globalMutex.lock();
+        if (gameState == 0) {
+            lobbyInterface(window, thisPlayer, playerNum, otherPlayers, windowSize, quit, lobbyText, UIWidth1, UIWidth2, playerSelected, gameMode, gameModeLookup, mapName, readyButton);
+        } else if (gameState == 1) {
+            gameInterface(window, thisPlayer, playerNum, otherPlayers, playerPos, moveInputs, moveInputBinds, moveVectors, moveSpeed, quit, deltaTime);
+        } else if (gameState == 2) {
         }
+        globalMutex.unlock();
 
-        //calculate velocity based on inputs
-        std::fill(std::begin(rawVel), std::end(rawVel), 0);
-        for (int i = 0; i < 4; i++) {
-            if (moveInputs[i]) {
-                rawVel[0] += moveVectors[i][0];
-                rawVel[1] += moveVectors[i][1];
-            }
+        if (quit) {
+            serverListenerThread.join();
+            window.close();
         }
-        rawDist = sqrt(abs(rawVel[0])+abs(rawVel[1]));
-        if (rawDist != 0) {
-            rawDist = 1/rawDist;
-        }
-
-        //update position
-        playerPos[0] += rawVel[0]*moveSpeed*rawDist*deltaTime;
-        playerPos[1] += rawVel[1]*moveSpeed*rawDist*deltaTime;
 
         //send info to server
         if (packetClock.getElapsedTime().asMicroseconds()/1000000.f >= 0.01) {
@@ -238,19 +206,6 @@ int main() {
             sendInfo();
             packetClock.restart();
         }
-
-        //draw screen
-        playerIcon.setPosition(playerPos[0]-30, playerPos[1]-30);
-        window.clear();
-        window.draw(playerIcon);
-        globalMutex.lock();
-        for (int i = 0; i < playerNum; i++) {
-            otherPlayerIcon.setPosition(otherPlayers[i].position[0]-30, otherPlayers[i].position[1]-30);
-            otherPlayerIcon.setFillColor(sf::Color(otherPlayers[i].color[0], otherPlayers[i].color[1], otherPlayers[i].color[2]));
-            window.draw(otherPlayerIcon);
-        }
-        globalMutex.unlock();
-        window.display();
     }
     delete[] otherPlayers;
 }
